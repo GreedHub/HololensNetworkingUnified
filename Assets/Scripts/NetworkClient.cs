@@ -55,7 +55,7 @@ public class NetworkClient : MonoBehaviour {
 
     [Header("Debug Properties")]
     public Text debugText;
-    //public Text boxDebugText;
+    public Text boxDebugText;
 
     private Vector3 lastPosition;
     private Quaternion lastRotation;
@@ -66,6 +66,8 @@ public class NetworkClient : MonoBehaviour {
     public GameObject WorldCenter;
     private int retryCount = 10;
     private byte[] importedWorldAnchor;
+    private int newPlayerConnectionId;
+    private byte[] anchorCollection;
 
 
     public void StartServer()
@@ -103,6 +105,8 @@ public class NetworkClient : MonoBehaviour {
         host.connectionId = connectionId;
         hostConnectionId = connectionId;
         clientsList.Add(host);
+
+        WorldCenter.AddComponent<WorldAnchor>();
     }
 
     // Start is called before the first frame update
@@ -117,8 +121,6 @@ public class NetworkClient : MonoBehaviour {
             Debug.Log("RoomScale mode was not set successfully");
         }
 
-        WorldCenter.AddComponent<WorldAnchor>();
-
         NetworkTransport.Init();
     }
 
@@ -130,6 +132,7 @@ public class NetworkClient : MonoBehaviour {
             box.boxId = i;
             Vector3 position = new Vector3(Random.Range(-2.0f, 2.0f), 0.2f, Random.Range(-2.0f, 2.0f));
             box.prefab = Instantiate(boxToPlay, position, Quaternion.identity);
+            box.prefab.transform.parent = WorldCenter.transform;
             listOfBoxes.Add(box);
         }
     }
@@ -153,7 +156,7 @@ public class NetworkClient : MonoBehaviour {
 
         if (serverIp.text == "")
         {
-            hostIp = "181.165.152.61";            
+            hostIp = "192.168.100.4";            
         }       
 
         ConnectionConfig connectionConfig = new ConnectionConfig();
@@ -189,6 +192,8 @@ public class NetworkClient : MonoBehaviour {
         int dataSize;
         byte error;
 
+
+        //Recibir info del otro lado de la comunicacion
         NetworkEventType recData = NetworkTransport.Receive(out recHostId, out connectionId, out channelId, recBuffer, bufferSize, out dataSize, out error);
 
         switch (recData)
@@ -211,8 +216,11 @@ public class NetworkClient : MonoBehaviour {
 
             case NetworkEventType.DataEvent:
                 string msg = Encoding.Unicode.GetString(recBuffer, 0, dataSize);
-                Debug.Log("Recived: " + msg);
+                //Debug.Log("Recived: " + msg);
                 string[] msgArray = msg.Split('|');
+
+                //msgArray[0] = "UPDPREFTRANS"
+                //msgArray[1] = 1
 
                 switch (msgArray[0])
                 {
@@ -250,10 +258,11 @@ public class NetworkClient : MonoBehaviour {
                         box.prefab.AddComponent<WorldAnchor>();
                         box.boxId = int.Parse(msgArray[8]);
                         box.prefab.transform.hasChanged = false;
+                        box.prefab.transform.parent = WorldCenter.transform;
                         listOfBoxes.Add(box);
                         break;
 
-                    case "UPDCARTRANS":
+                    case "UPDPREFTRANS":
 
                         Vector3 updatedPosition = new Vector3(ParseFloatUnit(msgArray[1]), ParseFloatUnit(msgArray[2]), ParseFloatUnit(msgArray[3]));
                         Quaternion updatedRotation = new Quaternion(ParseFloatUnit(msgArray[4]), ParseFloatUnit(msgArray[5]), ParseFloatUnit(msgArray[6]), ParseFloatUnit(msgArray[7]));
@@ -290,13 +299,14 @@ public class NetworkClient : MonoBehaviour {
                         clientsList.Remove(itemToRemove);
                         break;
                     
-                    case "UPDTWANCHOR":
-                       // GenerateWorldAnchor(msg.Replace("UPDTWANCHOR|", ""));
+                    case "ANCHORSENDCOMPLETE":
+                        debugText.text += "ANCHORSENDCOMPLETE |";
+                        boxDebugText.text += anchorCollection;
+                        ImportWorldAnchor(anchorCollection);
                         break;
 
                     default:
-                       // BufferWorldAnchorStream(recBuffer, dataSize);
-
+                        BufferWorldAnchorStream(recBuffer, dataSize);
                         break;
                 }
 
@@ -329,13 +339,32 @@ public class NetworkClient : MonoBehaviour {
             {
                 if (box.prefab.transform.hasChanged)
                 {
-                Debug.Log("SENDING!!!");
+                //Debug.Log("SENDING!!!");
                     UpdateServerBox(box.boxId, box.prefab.transform.position, box.prefab.transform.rotation);
                     lastSentTime = Time.time;
                     box.prefab.transform.hasChanged = false;
                 }
             }
         }
+    }
+
+    private void BufferWorldAnchorStream(byte[] buffer, int dataSize)
+    {
+        int lenght = buffer.Length + anchorCollection.Length;
+        byte[] result = new byte[lenght];
+
+        anchorCollection.CopyTo(result, 0);
+        buffer.CopyTo(result, anchorCollection.Length);
+
+        anchorCollection = new byte[lenght];
+        anchorCollection = result;
+
+        boxDebugText.text = "Debug2: ";
+        foreach (byte number in anchorCollection)
+        {
+            boxDebugText.text += number;
+        }
+        debugText.text += "Reconstruyendo buffer";
     }
 
     private void OnClientConnection(int connectionId)
@@ -371,7 +400,8 @@ public class NetworkClient : MonoBehaviour {
         }
 
         //Give the player the collection of anchors
-        
+        newPlayerConnectionId = connectionId;
+        ExportWorldAnchor();
 
     }
 
@@ -380,7 +410,7 @@ public class NetworkClient : MonoBehaviour {
 
         if (!isServerStarted)
         {
-            if (message.Replace("UPDCARTRANS", "") == message &&
+            if (message.Replace("UPDPREFTRANS", "") == message &&
                 message.Replace("UPDATEBOX", "") == message)
             {
                 Debug.Log("Sending: " + message);
@@ -460,10 +490,11 @@ public class NetworkClient : MonoBehaviour {
         ServerClient client = new ServerClient();
         client.connectionId = playersConnectionId;
         client.playerName = playersName;
+        
         if (!isServerStarted)
         {
             client.playerPrefab = Instantiate(otherPlayerPrefab, new Vector3(2, 2, 2), Quaternion.identity);
-            client.playerPrefab.AddComponent<WorldAnchor>();
+            client.playerPrefab.transform.parent = WorldCenter.transform;
         }
         clientsList.Add(client);
     }
@@ -490,6 +521,7 @@ public class NetworkClient : MonoBehaviour {
     {
         player.playerName = name;
         player.playerPrefab = Instantiate(otherPlayerPrefab, new Vector3(0, 0, 0), Quaternion.identity);
+        player.playerPrefab.transform.parent = WorldCenter.transform;
     }
 
     private void MoveClientPlayer(ServerClient player, Vector3 updatedPosition, Quaternion updatedRotation)
@@ -500,7 +532,6 @@ public class NetworkClient : MonoBehaviour {
             DestroyImmediate(player.playerPrefab.GetComponent<WorldAnchor>());
             player.playerPrefab.transform.position = updatedPosition;
             player.playerPrefab.transform.rotation = updatedRotation;
-            player.playerPrefab.AddComponent<WorldAnchor>();
         }
     }
 
@@ -518,7 +549,7 @@ public class NetworkClient : MonoBehaviour {
 
     private void UpdateServerCar()
     {
-        string msg = "UPDCARTRANS|";
+        string msg = "UPDPREFTRANS|";
         msg += playerPrefab.transform.position.x + "|";
         msg += playerPrefab.transform.position.y + "|";
         msg += playerPrefab.transform.position.z + "|";
@@ -581,29 +612,31 @@ public class NetworkClient : MonoBehaviour {
             // The client can start importing once all the data is received.
             Debug.Log("success!!");
             debugText.text += "giving anchors succeded";
-            string msg = "WANCHOR|END";
-            SendNetworkMessage(msg, reliableChannel, connectionId);
+            string msg = "ANCHORSENDCOMPLETE";
+            SendNetworkMessage(msg, reliableChannel, newPlayerConnectionId);
         }
     }
 
     private void OnExportDataAvailable(byte[] data)
     {
         // Send the bytes to the client.  Data may also be buffered.
-        NetworkTransport.Send(hostId, connectionId, reliableChannel, data, data.Length, out error);
+        NetworkTransport.Send(hostId, newPlayerConnectionId, reliableChannel, data, data.Length, out error);
         //string msg = Encoding.UTF8.GetString(data, 0, data.Length);
         //debugText.text += msg;
         //SendNetworkMessage(msg, reliableChannel,connectionId);
         //Debug.Log(msg);
     }
 
-    private void GenerateWorldAnchor(string importedDataString)
-    {
-        importedWorldAnchor = Encoding.UTF8.GetBytes(importedDataString);
-        ImportWorldAnchor(importedWorldAnchor);
-    }
-
     private void ImportWorldAnchor(byte[] importedData)
     {
+        debugText.text += "Started GameRootAnchor import |";
+
+        foreach(byte number in importedData)
+        {
+            debugText.text += number;
+        }
+        debugText.text += "|";
+
         WorldAnchorTransferBatch.ImportAsync(importedData, OnImportComplete);
     }
 
@@ -621,12 +654,9 @@ public class NetworkClient : MonoBehaviour {
             return;
         }
 
-        string[] ids = deserializedTransferBatch.GetAllIds();
-        foreach (string id in ids)
-        {
-            debugText.text += "importing anchor succeded!!";
-            deserializedTransferBatch.LockObject(id, WorldCenter);
-        }
+        debugText.text += "GameRootAnchor Imported!!! |";
+        deserializedTransferBatch.LockObject("GameRootAnchor", WorldCenter);
+
     }
 
 }
